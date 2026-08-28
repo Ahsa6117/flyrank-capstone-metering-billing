@@ -1,0 +1,146 @@
+# FlyRank capstone manifest — read by the evaluator.
+name: usage-metering-billing-engine
+track: backend
+capstone: Usage Metering & Billing Engine
+repo: https://github.com/Ahsa6117/flyrank-capstone-metering-billing
+
+language: python
+framework: fastapi
+database: sqlite            # Postgres-ready; see docker-compose.yml
+
+# One command each. Requires Python 3.11+ and nothing else — no Docker, no
+# database server, no Stripe account, no AI key.
+setup: pip install -r requirements.txt
+seed: python seed.py        # applies migrations, creates the demo tenants below
+run: python -m uvicorn app.main:app --port 8000
+test: python -m pytest      # 70 tests
+
+base_url: http://localhost:8000
+
+# Demo credentials created by `seed.py`. Local SQLite only — not secrets.
+auth:
+  scheme: bearer
+  header: "Authorization: Bearer <api_key>"
+  tenants:
+    - api_key: demo_key_acme_free
+      tenant: tnt_acme
+      plan: free
+      note: metering, quotas, and the 429 boundary
+    - api_key: demo_key_globex_pro
+      tenant: tnt_globex
+      plan: pro
+      note: the higher Pro limits
+    - api_key: demo_key_initech_pastdue
+      tenant: tnt_initech
+      plan: pro
+      note: subscription is past_due — returns 402 even with quota remaining
+
+endpoints:
+  - method: GET
+    path: /health
+    auth: none
+    expect: 200
+
+  - method: POST
+    path: /v1/generate
+    auth: bearer
+    headers:
+      Idempotency-Key: <uuid v4, required>
+    body: >
+      {"prompt":"hello","simulated_tokens":
+       {"input":1200,"cached_input":800,"output":500,"reasoning":300}}
+    expect: 200
+    note: >
+      The billable action. Sending it twice with the same Idempotency-Key returns
+      the identical body with idempotent_replay=true and creates no second usage
+      event. Cost of this exact body is 2396000 micro-cents ($0.023960).
+
+  - method: GET
+    path: /v1/usage
+    auth: bearer
+    expect: 200
+    note: monthly rollup — used, limit, remaining, cost, and the token breakdown
+
+  - method: POST
+    path: /v1/billing/checkout
+    auth: bearer
+    body: '{"plan_code":"pro"}'
+    expect: 200
+    note: >
+      Creates a Stripe test-mode Checkout Session. Returns
+      503 stripe_not_configured until STRIPE_SECRET_KEY and STRIPE_PRICE_ID_PRO
+      are set in .env — see README "Stripe setup".
+
+  - method: POST
+    path: /webhooks/stripe
+    auth: stripe-signature
+    expect: 200
+    note: >
+      Verifies the HMAC-SHA256 signature over the raw body (forged or stale -> 400,
+      nothing written) and deduplicates on event.id (replay -> processed once).
+      Returns 503 until STRIPE_WEBHOOK_SECRET is set.
+
+  - method: POST
+    path: /internal/jobs/run
+    auth: header
+    headers:
+      X-Internal-Token: <INTERNAL_JOB_TOKEN from .env>
+    expect: 200
+    note: runs the background rollup + alerts job on demand
+
+# How each published acceptance probe is satisfied.
+probes:
+  probe_1_idempotency:
+    how: >
+      POST /v1/generate twice with one Idempotency-Key. Both responses carry the
+      same usage_event_id and cost; the second sets idempotent_replay=true and the
+      Idempotent-Replay header. Exactly one usage_events row.
+    proof: EVIDENCE.md "R1 · R2"
+    test: tests/test_metering_idempotency.py
+
+  probe_2_quota_boundary:
+    how: >
+      Documented rule is used + requested <= limit. On Free (100,000 tokens) the
+      request landing on exactly 100,000 succeeds; the next single token returns
+      429 with Retry-After and a message naming used, limit and requested.
+    proof: EVIDENCE.md "R3 · R4"
+    test: tests/test_quota.py
+
+  probe_3_checkout_upgrade:
+    how: >
+      A verified checkout.session.completed flips the tenant Free -> Pro, and
+      GET /v1/usage then reports 50,000 calls / 5,000,000 tokens.
+    proof: EVIDENCE.md "R8 · R9"
+    test: tests/test_webhooks.py::test_usage_endpoint_shows_the_new_limits_after_the_upgrade
+
+  probe_4_webhook_security:
+    how: >
+      A forged signature returns 400 and writes nothing; a validly signed but
+      stale event is also rejected; replaying a real event id is processed once.
+    proof: EVIDENCE.md "R8 · R9"
+    test: tests/test_webhooks.py
+
+  probe_5_pricing:
+    how: >
+      Pinned constants in app/core/pricing.py. Cached input is 10x cheaper than
+      fresh input, reasoning is billed at the output rate, and categories are
+      never summed before pricing. All money is integer micro-cents.
+    proof: EVIDENCE.md "R5 · R6 · R7"
+    test: tests/test_pricing.py
+
+shared_requirements:
+  layered_architecture: app/api (HTTP) -> app/services (logic) -> app/repositories (data)
+  validation_at_boundary: Pydantic schemas; bad input is 4xx, never 500
+  background_job: app/jobs/rollup_and_alerts.py — retries x3 + failure alert in job_runs
+  real_persistence: numbered SQL migrations, indexes, tenant_id required on every repo method
+  idempotency: UNIQUE(tenant_id, idempotency_key); proven under 8-thread concurrency
+  secrets_clean: .env git-ignored from commit #1; sk_live_ refuses to boot; logs redacted
+  ai_cost_tracked: per-call cost attributed to the tenant, enforced against the plan quota
+
+docs:
+  design: docs/DESIGN.md
+  architecture: docs/ARCHITECTURE.md
+  requirements: docs/REQUIREMENTS.md
+  references: docs/REFERENCES.md
+  evidence: EVIDENCE.md
+  buildlog: BUILDLOG.md
