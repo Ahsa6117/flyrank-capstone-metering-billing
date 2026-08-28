@@ -77,7 +77,10 @@ async def stripe_webhook(
 
     # 3. Dedup + handle. Stripe wants a fast 2xx; the heavy rollup work is the
     #    background job's problem, not this request's (rule W6).
-    result = StripeSyncService(session).handle_event(
-        event if isinstance(event, dict) else event.to_dict_recursive()
-    )
-    return result
+    # Verification passed, so the raw bytes are trustworthy: parse them into a
+    # plain dict rather than depending on the SDK's object-to-dict helper, whose
+    # name has changed across stripe-python versions.
+    import json
+
+    event_dict = event if isinstance(event, dict) else json.loads(payload)
+    return StripeSyncService(session).handle_event(event_dict)
