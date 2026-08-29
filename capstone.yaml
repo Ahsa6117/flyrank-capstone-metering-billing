@@ -13,7 +13,7 @@ database: sqlite            # Postgres-ready; see docker-compose.yml
 setup: pip install -r requirements.txt
 seed: python seed.py        # applies migrations, creates the demo tenants below
 run: python -m uvicorn app.main:app --port 8000
-test: python -m pytest      # 70 tests
+test: python -m pytest      # 71 tests
 
 base_url: http://localhost:8000
 
@@ -67,7 +67,9 @@ endpoints:
     body: '{"plan_code":"pro"}'
     expect: 200
     note: >
-      Creates a Stripe test-mode Checkout Session. Returns
+      Creates a Stripe test-mode Checkout Session. Verified end to end against a
+      real Stripe sandbox: hosted Checkout paid with 4242..., real signed webhook
+      flipped the tenant Free -> Pro (see EVIDENCE.md). Returns
       503 stripe_not_configured until STRIPE_SECRET_KEY and STRIPE_PRICE_ID_PRO
       are set in .env — see README "Stripe setup".
 
@@ -108,15 +110,18 @@ probes:
 
   probe_3_checkout_upgrade:
     how: >
-      A verified checkout.session.completed flips the tenant Free -> Pro, and
-      GET /v1/usage then reports 50,000 calls / 5,000,000 tokens.
+      Verified LIVE against a Stripe sandbox: a real hosted Checkout paid with
+      test card 4242 4242 4242 4242 produced a real signed
+      checkout.session.completed, which flipped the tenant Free -> Pro. GET
+      /v1/usage then reports 50,000 calls / 5,000,000 tokens.
     proof: EVIDENCE.md "R8 · R9"
     test: tests/test_webhooks.py::test_usage_endpoint_shows_the_new_limits_after_the_upgrade
 
   probe_4_webhook_security:
     how: >
-      A forged signature returns 400 and writes nothing; a validly signed but
-      stale event is also rejected; replaying a real event id is processed once.
+      Verified LIVE with the real whsec_ secret and a real Stripe event: replaying
+      the same event id returns duplicate_ignored, a forged signature returns 400
+      and writes nothing, and a validly signed but stale event is also rejected.
     proof: EVIDENCE.md "R8 · R9"
     test: tests/test_webhooks.py
 

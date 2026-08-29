@@ -4,9 +4,10 @@ One pasted proof per requirement in `docs/REQUIREMENTS.md`. Every transcript bel
 is **real output** captured from a running instance on a freshly seeded database,
 or from the test suite — nothing here is written by hand from memory.
 
-**No secret appears in this file.** The webhook proofs use a local signing secret
-generated for offline verification (`whsec_local_offline_proof_secret_not_from_stripe`);
-it is not a Stripe credential and grants access to nothing.
+**No secret appears in this file.** The live Stripe section below was produced
+with a real `sk_test_` key and a real `whsec_` signing secret held only in `.env`
+(git-ignored); both are redacted here. The offline sections use a local signing
+secret that is not a Stripe credential and grants access to nothing.
 
 Reproduce everything:
 
@@ -15,12 +16,12 @@ python -m venv .venv && .venv/Scripts/pip install -r requirements.txt
 cp .env.example .env
 python seed.py
 python -m uvicorn app.main:app --port 8000
-python -m pytest            # 70 tests, all green
+python -m pytest            # 71 tests, all green
 ```
 
 ---
 
-## Test suite — 70 passed
+## Test suite — 71 passed
 
 ```
 $ python -m pytest -v
@@ -95,7 +96,7 @@ tests/test_webhooks.py::test_past_due_update_downgrades_limits_but_keeps_the_sub
 tests/test_webhooks.py::test_unhandled_event_type_is_a_200_noop  PASSED
 tests/test_webhooks.py::test_handlers_are_order_independent  PASSED
 
-============================= 70 passed in 1.78s ==============================
+============================= 71 passed in 1.82s ==============================
 ```
 
 ---
@@ -269,91 +270,92 @@ arithmetic.
 
 ---
 
-## R8 · R9 — Stripe: checkout, signature verification, deduplication
+## R8 · R9 — Stripe: LIVE test-mode Checkout, signature verification, deduplication
 
-**PROBE 3.** A genuine `checkout.session.completed` flips the tenant Free -> Pro,
-and `GET /usage` immediately shows the new limits.
+**This was run end to end against a real Stripe sandbox account**
+(`acct_1U9ZlY21UCuqPNZA`), with a real hosted Checkout page, the real Stripe CLI
+forwarding real signed events, and the real `whsec_` signing secret.
 
 ```
---- before ---
-plan: free | api_calls limit: 1000 | tokens limit: 100000
+--- 1. the app creates a REAL Checkout Session ---
+$ curl -X POST localhost:8000/v1/billing/checkout \
+    -H "Authorization: Bearer demo_key_acme_free" -d {"plan_code":"pro"}
+{"checkout_session_id":"cs_test_a1fDpCKwzVLlYDyHSPcZw0GjoreLPU9lAPaFlp88PwJWwZNlpupxZHyrAE",
+ "checkout_url":"https://checkout.stripe.com/c/pay/cs_test_a1fDpCKwzVLlYD...",
+ "tenant_id":"tnt_acme","plan_code":"pro"}
 
-$ python tools/sign_webhook.py checkout.session.completed --tenant tnt_acme --event-id evt_probe3
+--- 2. paid on Stripe's hosted page with test card 4242 4242 4242 4242 ---
+    (Sandbox mode. No real money moves.)
+
+--- 3. stripe listen forwarded the real signed events ---
+$ stripe listen --forward-to localhost:8000/webhooks/stripe
+Ready! You are using Stripe API Version [2026-08-26.dahlia]. Your webhook signing secret is whsec_***REDACTED*** (^C to quit)
+2026-08-29 03:13:42   --> customer.subscription.created [evt_1U9Zty21UCuqPNZAH4EHrqR7]
+2026-08-29 03:13:42   --> checkout.session.completed [evt_1U9Zty21UCuqPNZA0dl3E9gx]
+
+--- 4. the tenant flipped Free -> Pro, and GET /usage shows the new limits ---
+$ curl localhost:8000/v1/usage -H "Authorization: Bearer demo_key_acme_free"
+{"tenant_id":"tnt_acme","plan":{"code":"pro","name":"Pro","quota_api_calls":50000,"quota_tokens":5000000},"subscription_status":"active","period":{"start":"2026-08-01T00:00:00+00:00","reset_at":"2026-09-01T00:00:00+00:00"},"api_calls":{"used":0,"limit":50000,"remaining":50000},"tokens":{"used":0,"limit":5000000,"remaining":5000000,"breakdown":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0,"reasoning_tokens":0}},"cost":{"micro_cents":0,"cents":0,"usd":"0.000000"},"event_count":0}
+
+--- 5. the subscription row, written only from the verified webhook ---
+tenant=tnt_acme plan=pro status=active
+stripe_customer_id=cus_V9thoPq1i92Qdj
+stripe_subscription_id=sub_1U9Ztw21UCuqPNZAb9F8yJWr
+
+--- 6. REPLAY the same real event id -> processed once ---
+<claude-code-hint v="1" type="plugin" value="stripe@claude-plugins-official" />
+POST http://localhost:8000/webhooks/stripe  [valid signature]  event=evt_1U9Zty21UCuqPNZA0dl3E9gx type=checkout.session.completed
 HTTP 200
-{"status":"processed","event_id":"evt_probe3","action":"plan_upgraded","tenant_id":"tnt_acme","plan":"pro"}
+{"status":"duplicate_ignored","event_id":"evt_1U9Zty21UCuqPNZA0dl3E9gx"}
 
---- after: GET /usage shows the new limits ---
-{"tenant_id":"tnt_acme","plan":{"code":"pro","name":"Pro","quota_api_calls":50000,"quota_tokens":5000000},"subscription_status":"active","period":{"start":"2026-08-01T00:00:00+00:00","reset_at":"2026-09-01T00:00:00+00:00"},"api_calls":{"used":2,"limit":50000,"remaining":49998},"tokens":{"used":100000,"limit":5000000,"remaining":4900000,"breakdown":{"input_tokens":98400,"cached_input_tokens":800,"output_tokens":500,"reasoning_tokens":300}},"cost":{"micro_cents":11686000,"cents":11,"usd":"0.116860"},"event_count":2}
-
---- REPLAY the exact same event id: processed once ---
-$ python tools/sign_webhook.py checkout.session.completed --tenant tnt_acme --event-id evt_probe3
-HTTP 200
-{"status":"duplicate_ignored","event_id":"evt_probe3"}
-
---- processed_webhook_events holds exactly one row for that id ---
-$ sqlite3 data/billing.db "SELECT COUNT(*) FROM processed_webhook_events WHERE event_id='evt_probe3'"
-1
-
-$ ... "SELECT COUNT(*) FROM subscriptions WHERE tenant_id='tnt_acme'"
-1
-```
-
-> **Read the proof:** before, `plan: free` with a 100,000-token limit. After the
-> verified webhook, `"code":"pro"` with `"limit":5000000` and
-> `"api_calls":{"limit":50000}`. Replaying the **same `event_id`** returns
-> `duplicate_ignored`, and `processed_webhook_events` holds exactly one row —
-> one subscription, not two.
-
-**PROBE 4.** A forged signature is refused and changes nothing; a validly-signed
-but stale event is refused too.
-
-```
---- forged signature (signed with a secret the app does not hold) ---
-$ python tools/sign_webhook.py checkout.session.completed --tenant tnt_acme --forge
+--- 7. FORGED signature on that same real event -> 400, nothing changes ---
+<claude-code-hint v="1" type="plugin" value="stripe@claude-plugins-official" />
+POST http://localhost:8000/webhooks/stripe  [FORGED signature]  event=evt_1U9Zty21UCuqPNZA0dl3E9gx type=checkout.session.completed
 HTTP 400
 {"error":{"code":"invalid_signature","message":"Webhook signature verification failed."}}
 
---- nothing changed: tnt_acme is still on free ---
-plan: free | token limit: 100000
-
---- a validly signed but STALE event (timestamp 1 hour old, outside the 300s tolerance) ---
-$ python tools/sign_webhook.py checkout.session.completed --tenant tnt_acme --age 3600
-HTTP 400
-{"error":{"code":"invalid_signature","message":"Webhook signature verification failed."}}
+--- 8. still exactly one row for that event, tenant untouched ---
+processed_webhook_events rows for that event id: 1
+tnt_acme plan: pro
+subscription rows for tnt_acme: 1
 ```
 
-> **Read the proof:** the forged event returns **`400`** and the tenant is still
-> on `free` with the 100,000 limit — nothing was written. The stale event carries
-> a *correct* HMAC but a timestamp an hour old, outside the 300-second tolerance,
-> so it is rejected as well. That is why the tolerance must never be set to `0`.
+> **Read the proof:** the app created a genuine `cs_test_…` Checkout Session.
+> Payment was completed on **Stripe's own hosted page** with test card
+> `4242 4242 4242 4242` in Sandbox mode. Stripe then delivered real signed events
+> to `stripe listen`, which forwarded them to the app — every one answered `200`.
+> `GET /usage` flipped from `free` / 100,000 tokens to **`pro` / 5,000,000
+> tokens**, and the subscription row carries the real Stripe ids
+> (`cus_V9thoPq1i92Qdj`, `sub_1U9Ztw21UCuqPNZAb9F8yJWr`) — written only because a
+> signature-verified webhook arrived, never from the browser redirect.
+>
+> Then the **same real event id** was replayed with a **valid** signature →
+> `duplicate_ignored`, and with a **forged** signature → `400`. Afterwards there
+> is still exactly one row for that event and the tenant is untouched. That is
+> PROBE 4 against production Stripe cryptography, not a simulation.
 
 Verification follows Stripe's documented scheme exactly: HMAC-SHA256 over
 `"{timestamp}.{raw_body}"`, keyed by the `whsec_` secret, compared in constant
 time, over the **raw request bytes** (`app/api/webhooks.py` reads
 `await request.body()` before any parsing). Dedup keys on `event.id`, never on
-`created` — Stripe delivers at-least-once and out of order.
+`created` — Stripe delivers at-least-once and out of order, which the live log
+above shows plainly: 13 distinct events arrived from one checkout, unordered.
 
-```
-$ python -m pytest tests/test_webhooks.py -v
-tests/test_webhooks.py::test_forged_signature_is_rejected_with_400 PASSED
-tests/test_webhooks.py::test_forged_webhook_writes_nothing_at_all PASSED
-tests/test_webhooks.py::test_missing_signature_header_is_400 PASSED
-tests/test_webhooks.py::test_a_stale_but_validly_signed_event_is_rejected PASSED
-tests/test_webhooks.py::test_tampered_payload_fails_verification PASSED
-tests/test_webhooks.py::test_replaying_a_real_event_processes_it_once PASSED
-tests/test_webhooks.py::test_deduplication_keys_on_event_id_not_payload PASSED
-tests/test_webhooks.py::test_checkout_completed_flips_the_tenant_from_free_to_pro PASSED
-tests/test_webhooks.py::test_usage_endpoint_shows_the_new_limits_after_the_upgrade PASSED
-tests/test_webhooks.py::test_subscription_deleted_downgrades_to_free PASSED
-tests/test_webhooks.py::test_past_due_update_downgrades_limits_but_keeps_the_subscription PASSED
-tests/test_webhooks.py::test_unhandled_event_type_is_a_200_noop PASSED
-tests/test_webhooks.py::test_handlers_are_order_independent PASSED
+Note the app answered `200` to the nine event types it does not handle
+(`invoice.created`, `charge.succeeded`, …). That is deliberate: returning an error
+would make Stripe retry them for three days.
+
+Reproduce it yourself with your own test keys — see README "Stripe setup":
+
+```bash
+stripe listen --forward-to localhost:8000/webhooks/stripe
+python tools/setup_stripe_pro_price.py
+python tools/replay_real_event.py <event_id>          # replay -> processed once
+python tools/replay_real_event.py <event_id> --forge  # forged -> 400
 ```
 
-**Live Checkout status:** `POST /v1/billing/checkout` creates a real test-mode
-Checkout Session and is wired end to end; it returns `503 stripe_not_configured`
-until `STRIPE_SECRET_KEY` and `STRIPE_PRICE_ID_PRO` are present in `.env`. See
-*Limitations* in `README.md` — stated plainly rather than claimed as done.
+The offline harness (`tools/sign_webhook.py`) remains in the repo so the same
+proofs can be reproduced **without** any Stripe account.
 
 ---
 

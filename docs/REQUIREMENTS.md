@@ -7,11 +7,13 @@ Claims without evidence score as *not done*.
 Legend: `[x]` done **and** proven in `EVIDENCE.md`.
 
 **Status: every box below is ticked**, each with a real captured proof in
-`EVIDENCE.md` and a test in `tests/` (71 tests, all passing). The one item stated
-with a caveat is R8: the Checkout integration is complete and wired end to end,
-and the webhook half is proven with locally HMAC-signed events, but live Checkout
-against a real Stripe account awaits test-mode keys in `.env`. That caveat is in
-`README.md` (Limitations) and `EVIDENCE.md` rather than glossed over.
+`EVIDENCE.md` and a test in `tests/` (71 tests, all passing).
+
+R8 and R9 were verified **live against a real Stripe sandbox**: a hosted Checkout
+paid with test card `4242 4242 4242 4242`, real signed webhooks delivered through
+`stripe listen`, the tenant flipped Free → Pro, and a real event replayed with a
+valid signature (`duplicate_ignored`) and a forged one (`400`). Live mode was
+never touched, and the app refuses to start on an `sk_live_` key.
 
 ---
 

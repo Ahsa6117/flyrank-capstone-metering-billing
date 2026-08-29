@@ -13,7 +13,7 @@ constraints and integer arithmetic rather than by careful code.
 |---|---|
 | **Stack** | Python 3.11+ · FastAPI · SQLAlchemy · SQLite (Postgres-ready) · Stripe **test mode** |
 | **Cost to run** | $0. No credit card, ever. No AI key — token counts are simulated. |
-| **Tests** | 70, one command, deterministic |
+| **Tests** | 71, one command, deterministic |
 
 ---
 
@@ -295,7 +295,15 @@ record is emitted, so a key cannot leak through an exception trace.
 **No Stripe account?** `tools/sign_webhook.py` sends correctly-signed (and, with
 `--forge`, deliberately forged) webhooks using a local secret, so signature
 verification, the tolerance window, replay dedup and the Free → Pro flip can all be
-verified offline. That is how the proofs in `EVIDENCE.md` were produced.
+verified **without any Stripe account at all**.
+
+**With** an account, two more helpers do the same against real Stripe:
+
+```bash
+python tools/setup_stripe_pro_price.py          # creates the Pro price, writes price_ id to .env
+python tools/replay_real_event.py <event_id>          # replay a REAL event -> processed once
+python tools/replay_real_event.py <event_id> --forge  # forged signature -> 400
+```
 
 ---
 
@@ -359,12 +367,12 @@ Dependencies point one way only: `api → services → repositories → models`.
 
 ## Limitations — an honest list
 
-- **Live Stripe Checkout has not been exercised against a real Stripe account.**
-  The integration is complete and wired end to end, and signature verification,
-  replay dedup and the Free → Pro flip are proven with locally-signed webhooks
-  (`EVIDENCE.md`), but until `sk_test_`/`whsec_`/`price_` are present in `.env`,
-  `/v1/billing/checkout` returns `503 stripe_not_configured`. Nothing in
-  `EVIDENCE.md` claims otherwise.
+- **Stripe is verified live in test mode, but only in test mode.** A real hosted
+  Checkout was completed against a Stripe sandbox with card `4242…`, and real
+  signed webhooks flipped a tenant Free → Pro (`EVIDENCE.md`). Live mode has
+  never been exercised and never will be — the app refuses to start on an
+  `sk_live_` key. Without keys in `.env`, `/v1/billing/checkout` returns
+  `503 stripe_not_configured` rather than failing obscurely.
 - **SQLite is the default.** It is a real database with real constraints and the
   concurrency test passes against it, but SQLite serialises writers. The Postgres
   path exists and the models are portable; it has not been load-tested.

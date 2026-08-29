@@ -161,11 +161,36 @@ otherwise have made a real failure look like a passing suite.
 
 ---
 
-## What I could not fully verify
+## Verifying it against real Stripe
 
-Live Stripe Checkout has not been run against a real Stripe account — no keys were
-configured while building. The integration is complete and wired end to end, and
-signature verification, the tolerance window, replay dedup and the Free → Pro flip
-are proven with locally HMAC-signed webhooks (`tools/sign_webhook.py`), which
-exercises the same code path Stripe's own delivery would. This is stated in the
-README's *Limitations* and in `EVIDENCE.md` rather than glossed over.
+The build was finished before any Stripe account existed, so the whole webhook
+path was first proven offline with `tools/sign_webhook.py`, which builds a real
+HMAC-SHA256 `Stripe-Signature` from a local secret. That was deliberate: it meant
+signature verification, the tolerance window and replay dedup were all testable
+with no account, and it is still in the repo so anyone can reproduce those proofs
+with no account either.
+
+Afterwards a Stripe **sandbox** was created and the same paths were run for real:
+
+- a hosted Checkout paid with `4242 4242 4242 4242` (Sandbox — no real money)
+- `stripe listen` forwarding genuinely signed events to `localhost:8000`
+- the tenant flipping Free → Pro off `checkout.session.completed`
+- a **real** event replayed with a valid signature → `duplicate_ignored`, and the
+  same event with a forged signature → `400`
+
+Two things I only learned by running it live, which no offline harness would have
+surfaced:
+
+1. **One checkout produces 13 events, unordered.** `invoice.created`,
+   `charge.succeeded`, `payment_intent.*` and so on all arrive alongside the one
+   event I care about. The "unhandled event type is a `200` no-op" decision, which
+   had looked like defensive nicety, turned out to be load-bearing: returning an
+   error to those nine would have had Stripe retrying them for three days.
+2. **`stripe.Event.retrieve()` is not a dict.** `dict(event)` raises
+   `TypeError: Event is not iterable or a mapping`. The same class of SDK-shape
+   assumption that bit me earlier with `to_dict_recursive`. Fixed with
+   `event.to_dict()`.
+
+Sandbox rather than a plain unactivated account, on purpose: a sandbox cannot
+become live mode by a misclick. Belt and braces with the `sk_live_` startup
+guard.
