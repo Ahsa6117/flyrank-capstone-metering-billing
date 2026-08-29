@@ -161,6 +161,94 @@ otherwise have made a real failure look like a passing suite.
 
 ---
 
+## Attacking my own service, and what broke
+
+With everything green I went looking for what the tests were *not* covering,
+rather than re-running what already passed. Three probes against the running
+service; one of them found a real bug.
+
+### The over-quota race — a genuine, shipped bug
+
+Every concurrency test I had written used **one** idempotency key, so they all
+proved the same property: a retried request is metered once. That is only half
+the problem. Nothing tested many **different** keys arriving at once.
+
+So I drove a tenant to 999 of 1,000 calls and fired 12 simultaneous requests,
+each with its own key:
+
+```
+responses  : {200: 7, 429: 5}
+final usage: 1006/1000
+```
+
+Seven got through where one should have. **Six calls given away free.** This is
+the second failure mode the brief names — *"giving away unlimited access"* — and
+my own `DESIGN.md` asserted it could not happen:
+
+> "the check plus the write happen in one transaction, so two concurrent
+> requests at the boundary cannot both observe `used = 999`"
+
+That sentence was wrong, and being in one transaction is exactly why I believed
+it. A transaction gives atomicity, not isolation from a concurrent reader: the
+quota check is a `SELECT` and the meter is an `INSERT`, and two requests happily
+interleave between them. Both read 999, both think they have room, both write.
+
+The unique index that makes idempotency airtight is no help at all here, because
+there is no duplicate to detect — these are genuinely different requests.
+
+**The fix** (`migrations/002`, `TenantRepository.lock_for_metering`): the
+metering transaction now opens by bumping `tenants.metering_lock`. The value is
+never read; incrementing it is what takes a write lock, held to commit — a row
+lock on Postgres, the database write lock on SQLite. A second request for the
+same tenant blocks on that statement and so reads usage only after the first has
+committed.
+
+Ordering is the whole trick. Locking *after* the quota read would achieve
+nothing, because the stale read has already happened. Two supporting details:
+the gates roll back on rejection so a 429 leaves no trace of the lock, and
+SQLite needed `PRAGMA busy_timeout` so the waiting request waits instead of
+failing with "database is locked" — which would have turned a contended request
+into a 500.
+
+Same attack after the fix:
+
+```
+responses  : {200: 1, 429: 11}
+final usage: 1000/1000
+```
+
+### Two probes that found nothing
+
+Worth recording, because "I checked and it was fine" is also a result:
+
+- **Month boundaries.** Events written 5 days before, 1 second before, exactly
+  at, and 1 hour into the window: the rollup counted exactly the last two. The
+  lower bound is inclusive, the upper exclusive, and SQLite did not mangle the
+  timezone-aware timestamps I half-expected it to.
+- **A key rejected for quota.** I expected to find that a 429 poisons a key
+  forever, since `REFERENCES.md` I1 quotes Stripe storing the first outcome
+  *"regardless of whether it succeeds or fails"*. It does not — the gates raise
+  before anything is stored, so a customer who upgrades and retries the same key
+  is served. The **code was right and the doc was wrong**, so I wrote the
+  divergence down as rule I7 rather than "fixing" working behaviour to match a
+  sentence. Pinning a transient failure to a key permanently would be a bug, not
+  compliance.
+
+### What I take from this
+
+The tests were not weak because they were badly written; they were weak because
+they all attacked the same axis. Idempotency and quota look like one problem
+("don't let the same thing happen twice") and are actually two, with two
+different mechanisms. I would not have found it by reading the code — I found it
+by trying to break the running service, which is the only way this class of bug
+ever shows up.
+
+Also: `/health` returned `ok` without touching the database. `capstone.yaml`
+points a probe at it, so it now runs `SELECT 1` and reports `degraded` if the
+database is unreachable. Small, but a health check that cannot fail is a lie.
+
+---
+
 ## Verifying it against real Stripe
 
 The build was finished before any Stripe account existed, so the whole webhook

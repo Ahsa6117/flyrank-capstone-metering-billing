@@ -39,6 +39,8 @@ What the source says:
 | I4 | Only `POST /generate` accepts the key. `GET /usage` needs none — it is idempotent by definition. |
 | I5 | Concurrency: the unique index on `(tenant_id, idempotency_key)` is the arbiter. The loser of the race catches the `IntegrityError` and returns the winner's stored response — the DB constraint, not application logic, is what makes double-counting impossible. |
 | I6 | Records are retained (not pruned at 24h) because they are also our billing audit trail; retention is documented as a deliberate divergence in `DESIGN.md`. |
+| I7 | **Deliberate divergence from Stripe.** Stripe stores the first outcome *"regardless of whether it succeeds or fails"*, so a replay returns the original error. We store **successful outcomes only**. A 402 or 429 here is *transient* — the customer upgrades, or the month rolls over — and permanently pinning a failure to a key would keep serving "you are out of quota" to a customer who has since paid. Locked in by `test_a_key_rejected_for_quota_can_succeed_after_an_upgrade`. |
+| I8 | An idempotency key does **not** protect the quota. Two concurrent requests with *different* keys are two real requests; only serialising the read-then-write per tenant keeps them inside the allowance (see `lock_for_metering`). |
 
 ---
 

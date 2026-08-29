@@ -30,8 +30,12 @@ def _generate(client, key, *, idem=None, body=None):
 # --- HTTP contract ---------------------------------------------------------
 
 
-def test_health(client):
-    assert client.get("/health").json() == {"status": "ok"}
+def test_health_reports_the_database_not_just_the_process(client):
+    """A probe points at /health, so "ok" has to mean the service can work."""
+    body = client.get("/health").json()
+    assert body["status"] == "ok"
+    assert body["database"] == "ok"
+    assert body["stripe"] in {"configured", "not_configured"}
 
 
 def test_generate_and_usage_round_trip(client, api_tenant):

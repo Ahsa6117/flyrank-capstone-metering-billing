@@ -13,7 +13,7 @@ constraints and integer arithmetic rather than by careful code.
 |---|---|
 | **Stack** | Python 3.11+ · FastAPI · SQLAlchemy · SQLite (Postgres-ready) · Stripe **test mode** |
 | **Cost to run** | $0. No credit card, ever. No AI key — token counts are simulated. |
-| **Tests** | 71, one command, deterministic |
+| **Tests** | 77, one command, deterministic |
 
 ---
 

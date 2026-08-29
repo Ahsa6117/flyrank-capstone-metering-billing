@@ -13,7 +13,7 @@ database: sqlite            # Postgres-ready; see docker-compose.yml
 setup: pip install -r requirements.txt
 seed: python seed.py        # applies migrations, creates the demo tenants below
 run: python -m uvicorn app.main:app --port 8000
-test: python -m pytest      # 71 tests
+test: python -m pytest      # 77 tests
 
 base_url: http://localhost:8000
 

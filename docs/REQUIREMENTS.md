@@ -7,7 +7,7 @@ Claims without evidence score as *not done*.
 Legend: `[x]` done **and** proven in `EVIDENCE.md`.
 
 **Status: every box below is ticked**, each with a real captured proof in
-`EVIDENCE.md` and a test in `tests/` (71 tests, all passing).
+`EVIDENCE.md` and a test in `tests/` (77 tests, all passing).
 
 R8 and R9 were verified **live against a real Stripe sandbox**: a hosted Checkout
 paid with test card `4242 4242 4242 4242`, real signed webhooks delivered through

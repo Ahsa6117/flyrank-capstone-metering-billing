@@ -30,7 +30,7 @@ from typing import Any
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.core.errors import IdempotencyConflict
+from app.core.errors import BillingError, IdempotencyConflict
 from app.core.money import money_fields
 from app.core.periods import now
 from app.core.pricing import TokenUsage, price_event
@@ -80,21 +80,54 @@ class MeterService:
         """
         request_fp = fingerprint(request_payload)
 
-        # --- 1. replay check -------------------------------------------------
+        # --- 1. replay fast path ---------------------------------------------
+        # Read-only, and by far the common case for a retry. Answering here
+        # avoids taking the write lock below for requests that change nothing.
         existing = self.idempotency.get(tenant.id, idempotency_key)
         if existing is not None:
             return self._replay(existing, request_fp, idempotency_key)
 
-        # --- 2 & 3. gates. Both raise before anything is written. ------------
+        # --- 2. serialise this tenant's metering ------------------------------
+        # The quota check reads current usage and the insert writes it. Without a
+        # lock those two statements interleave: two callers at the boundary both
+        # read "999 used, one left" and both proceed. That measured 1006/1000
+        # under 12 concurrent requests -- free usage given away.
+        #
+        # Idempotency cannot help, because these are genuinely different
+        # requests with different keys. Only serialising per tenant can.
+        #
+        # This must come BEFORE the quota read. Locking afterwards would be
+        # useless: the stale read would already have happened.
+        self.quota.tenants.lock_for_metering(tenant.id)
+
+        # Re-check under the lock. A concurrent twin holding the same key may
+        # have committed while we waited, in which case this is now a replay.
+        existing = self.idempotency.get(tenant.id, idempotency_key)
+        if existing is not None:
+            self.session.rollback()
+            existing = self.idempotency.get(tenant.id, idempotency_key)
+            if existing is not None:
+                return self._replay(existing, request_fp, idempotency_key)
+            self.quota.tenants.lock_for_metering(tenant.id)
+
+        # --- 3 & 4. gates. Both raise before anything is written. ------------
         # 402 is checked first, deliberately: an unpaid tenant must not be told
         # they are out of quota (rule P3).
-        self.quota.assert_subscription_active(tenant)
-        self.quota.assert_within_quota(
-            tenant,
-            requested_api_calls=api_calls,
-            requested_tokens=tokens,
-            at=at,
-        )
+        try:
+            self.quota.assert_subscription_active(tenant)
+            self.quota.assert_within_quota(
+                tenant,
+                requested_api_calls=api_calls,
+                requested_tokens=tokens,
+                at=at,
+            )
+        except BillingError:
+            # Release the lock immediately rather than holding it until the
+            # request unwinds. A rejected request must also leave no trace: the
+            # lock bump is rolled back with everything else, so a 402 or 429
+            # writes nothing at all.
+            self.session.rollback()
+            raise
 
         # --- 4. price, in integer micro-cents --------------------------------
         cost = price_event(api_calls, tokens)

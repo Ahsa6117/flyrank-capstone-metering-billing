@@ -16,7 +16,7 @@ python -m venv .venv && .venv/Scripts/pip install -r requirements.txt
 cp .env.example .env
 python seed.py
 python -m uvicorn app.main:app --port 8000
-python -m pytest            # 71 tests, all green
+python -m pytest            # 77 tests, all green
 ```
 
 ---

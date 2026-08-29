@@ -42,9 +42,16 @@ def _make_engine():
         from sqlalchemy import event
 
         @event.listens_for(engine, "connect")
-        def _fk_on(dbapi_conn, _record):  # pragma: no cover - trivial
+        def _sqlite_pragmas(dbapi_conn, _record):  # pragma: no cover - trivial
             cur = dbapi_conn.cursor()
+            # SQLite ignores foreign keys unless asked, and tenant isolation
+            # depends on them being real.
             cur.execute("PRAGMA foreign_keys=ON")
+            # The metering lock serialises writers per tenant. Without a busy
+            # timeout the loser of that race fails with "database is locked"
+            # instead of waiting its turn, which would surface as a 500 on a
+            # request that is merely contended.
+            cur.execute("PRAGMA busy_timeout=10000")
             cur.close()
 
     return engine

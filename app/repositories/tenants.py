@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.models import Plan, Subscription, Tenant
@@ -50,6 +50,28 @@ class TenantRepository:
     def get_by_stripe_customer_id(self, customer_id: str) -> Subscription | None:
         return self.session.scalar(
             select(Subscription).where(Subscription.stripe_customer_id == customer_id)
+        )
+
+    def lock_for_metering(self, tenant_id: str) -> None:
+        """Serialise metering for one tenant until the transaction commits.
+
+        The quota check is a read followed by a write, and without this the two
+        can interleave: two callers both read "999 used, one left" and both
+        insert. Measured 1006/1000 with 12 concurrent requests before this
+        existed.
+
+        Bumping a column is what takes the lock -- the value is never read. On
+        Postgres this is a row lock, so only requests for the SAME tenant
+        contend. On SQLite it is the database write lock, which is coarser but
+        equally correct.
+
+        This must be the FIRST write in the transaction. Locking after the quota
+        read would be pointless: the stale read would already have happened.
+        """
+        self.session.execute(
+            update(Tenant)
+            .where(Tenant.id == tenant_id)
+            .values(metering_lock=Tenant.metering_lock + 1)
         )
 
     def set_plan(self, tenant_id: str, plan_code: str) -> None:

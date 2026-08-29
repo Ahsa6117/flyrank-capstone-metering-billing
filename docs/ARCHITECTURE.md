@@ -48,6 +48,11 @@ Client → Billable API request  (Idempotency-Key required)
          │                                (no new event, idempotent_replay: true)
          ├─ duplicate key, other body? → 409 Conflict
          │
+         ├─ BUMP tenants.metering_lock  ── serialises this tenant until COMMIT
+         │      (a second request for the same tenant waits here, so it reads
+         │       usage only after the first has committed. Without this, two
+         │       requests at the boundary both saw "one call left": 1006/1000.)
+         │
          ├─ subscription in good standing? ──────────────► 402 Payment Required
          │                                                  (checked BEFORE quota)
          ├─ Quota Check:  used + requested <= limit ?

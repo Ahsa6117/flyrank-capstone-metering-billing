@@ -53,6 +53,10 @@ class Tenant(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=now
     )
+    #: Never read for its value. Bumped at the start of a metering transaction to
+    #: take a write lock, which serialises the quota read-then-write per tenant.
+    #: See migrations/002 and TenantRepository.lock_for_metering.
+    metering_lock: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     plan: Mapped[Plan] = relationship(lazy="joined")
     subscription: Mapped["Subscription | None"] = relationship(
