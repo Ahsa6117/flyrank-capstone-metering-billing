@@ -308,3 +308,27 @@ def test_internal_job_endpoint_requires_a_token(client):
     )
     assert ok.status_code == 200
     assert ok.json()["status"] == "success"
+
+
+def test_env_example_placeholders_read_as_unconfigured():
+    """Copying .env.example verbatim must not look like a configured Stripe.
+
+    The README's first step is `cp .env.example .env`, so the placeholder values
+    have to report as unset — otherwise the app appears configured and fails deep
+    inside a Stripe call instead of returning a clear 503.
+    """
+    placeholder = Settings(
+        stripe_secret_key="sk_test_replace_me",
+        stripe_webhook_secret="whsec_replace_me",
+        stripe_price_id_pro="price_replace_me",
+    )
+    assert placeholder.stripe_configured is False
+    assert placeholder.stripe_api_configured is False
+    assert placeholder.stripe_webhooks_configured is False
+
+    real = Settings(
+        stripe_secret_key="sk_test_realvalue",
+        stripe_webhook_secret="whsec_realvalue",
+        stripe_price_id_pro="price_realvalue",
+    )
+    assert real.stripe_configured is True

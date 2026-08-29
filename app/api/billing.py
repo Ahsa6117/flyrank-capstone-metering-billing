@@ -29,7 +29,7 @@ def create_checkout_session(
     from Checkout would let anyone upgrade themselves by visiting a URL.
     """
     settings = get_settings()
-    if not settings.stripe_secret_key or not settings.stripe_price_id_pro:
+    if not settings.stripe_api_configured:
         return error_response(
             503,
             "stripe_not_configured",

@@ -37,7 +37,7 @@ async def stripe_webhook(
 ):
     settings = get_settings()
 
-    if not settings.stripe_webhook_secret:
+    if not settings.stripe_webhooks_configured:
         return error_response(
             503,
             "stripe_not_configured",

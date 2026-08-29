@@ -60,9 +60,29 @@ class Settings(BaseSettings):
             )
         return v
 
+    @staticmethod
+    def _is_real(value: str) -> bool:
+        """A value straight out of .env.example is not a configured value.
+
+        Copying .env.example verbatim is the documented first step, so the
+        placeholders must read as "unset". Otherwise the app looks configured and
+        fails deep inside a Stripe call instead of returning a clear 503.
+        """
+        return bool(value) and "replace_me" not in value.lower()
+
+    @property
+    def stripe_api_configured(self) -> bool:
+        return self._is_real(self.stripe_secret_key) and self._is_real(
+            self.stripe_price_id_pro
+        )
+
+    @property
+    def stripe_webhooks_configured(self) -> bool:
+        return self._is_real(self.stripe_webhook_secret)
+
     @property
     def stripe_configured(self) -> bool:
-        return bool(self.stripe_secret_key and self.stripe_webhook_secret)
+        return self.stripe_api_configured and self.stripe_webhooks_configured
 
 
 @lru_cache
